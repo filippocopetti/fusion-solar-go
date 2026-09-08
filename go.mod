@@ -1,3 +1,3 @@
-module github.com/example/fusion-solar-go
+module github.com/filippocopetti/fusion-solar-go
 
 go 1.22
