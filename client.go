@@ -3,19 +3,62 @@ package fusionsolar
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"image"
+	_ "image/jpeg"
+	_ "image/png"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	ort "github.com/yalue/onnxruntime_go"
 )
 
 const userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
 
 type CaptchaSolver interface{ SolveCaptcha([]byte) (string, error) }
+
+// ONNXCaptchaSolver implements the captcha solver used by FusionSolarPy.
+// The model must expose an image input and a character-logit output.  Output
+// is laid out as [characters][alphabet] (the usual FusionSolar model format).
+type ONNXCaptchaSolver struct {
+	session *ort.AdvancedSession
+	input   *ort.Tensor[float32]
+	output  *ort.Tensor[float32]
+	width, height, characters int
+	alphabet string
+}
+
+func NewONNXCaptchaSolver(modelPath string, characters int) (*ONNXCaptchaSolver, error) {
+	if _, err := os.Stat(modelPath); err != nil { return nil, err }
+	if characters <= 0 { characters = 6 }
+	if err := ort.InitializeEnvironment(); err != nil { return nil, err }
+	in, err := ort.NewTensor(ort.NewShape(1, 1, 50, 200), make([]float32, 50*200)); if err != nil { return nil, err }
+	out, err := ort.NewTensor(ort.NewShape(1, int64(characters), 36), make([]float32, characters*36)); if err != nil { in.Destroy(); return nil, err }
+	s, err := ort.NewAdvancedSession(modelPath, []string{"input"}, []string{"output"}, []ort.Value{in}, []ort.Value{out}); if err != nil { in.Destroy(); out.Destroy(); return nil, err }
+	return &ONNXCaptchaSolver{session:s, input:in, output:out, width:200, height:50, characters:characters, alphabet:"0123456789abcdefghijklmnopqrstuvwxyz"}, nil
+}
+
+func (s *ONNXCaptchaSolver) Close() error {
+	if s == nil { return nil }; if s.session != nil { s.session.Destroy() }; if s.input != nil { s.input.Destroy() }; if s.output != nil { s.output.Destroy() }; return nil
+}
+
+func (s *ONNXCaptchaSolver) SolveCaptcha(data []byte) (string, error) {
+	if s == nil || s.session == nil { return "", errors.New("captcha ONNX session is not initialized") }
+	img, _, err := image.Decode(bytes.NewReader(data)); if err != nil { return "", err }
+	p := s.input.GetData(); b := img.Bounds()
+	for y:=0; y<s.height; y++ { for x:=0; x<s.width; x++ { r,g,bl,_:=img.At(b.Min.X+x*b.Dx()/s.width,b.Min.Y+y*b.Dy()/s.height).RGBA(); p[y*s.width+x]=float32((0.299*float64(r)+0.587*float64(g)+0.114*float64(bl))/65535) } }
+	if err := s.session.Run(); err != nil { return "", err }
+	v:=s.output.GetData(); var out strings.Builder
+	for i:=0; i<s.characters; i++ { best:=0; for j:=1; j<len(s.alphabet); j++ { if v[i*len(s.alphabet)+j]>v[i*len(s.alphabet)+best] { best=j } }; out.WriteByte(s.alphabet[best]) }
+	return out.String(), nil
+}
 type Client struct {
 	Username, Password, HuaweiSubdomain string
 	HTTP                                *http.Client
