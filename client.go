@@ -26,7 +26,7 @@ type Client struct {
 
 func NewClient(username, password, subdomain string, cookies map[string]string, solver CaptchaSolver) (*Client, error) {
 	if subdomain == "" {
-		subdomain = "region01eu5"
+		subdomain = "uni003eu5"
 	}
 	jar, _ := cookiejar.New(nil)
 	hc := &http.Client{Jar: jar, Timeout: 30 * time.Second}
